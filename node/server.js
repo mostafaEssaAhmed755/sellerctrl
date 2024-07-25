@@ -1,10 +1,32 @@
+import express from 'express';
 import puppeteer from 'puppeteer';
 import { exec } from 'child_process';
 import util from 'util';
 import NetworkSpeed from 'network-speed';
+import Queue from 'bull';
+import Redis from 'ioredis';
+import axios from 'axios';
+import dotenv from 'dotenv';
+
+dotenv.config();  // Load environment variables from .env file
 
 const execPromise = util.promisify(exec);
 const testNetworkSpeed = new NetworkSpeed();
+
+// Create a Redis client using the configuration from .env
+const redisClient = new Redis({
+    host: process.env.REDIS_HOST,
+    port: process.env.REDIS_PORT
+});
+redisClient.on('error', (err) => console.error('Redis error:', err));
+
+// Create a queue for scraping jobs
+const scrapeQueue = new Queue('scrapeQueue', { redis: { host: process.env.REDIS_HOST, port: process.env.REDIS_PORT } });
+
+const app = express();
+const port = process.env.NODE_PORT || 4000;
+
+app.use(express.json());  // Middleware to parse JSON bodies
 
 // Function to solve CAPTCHA using Python script
 async function solveCaptcha(captchaUrl) {
@@ -67,19 +89,23 @@ async function scrapeProductDetails(asin, browser) {
             productDetails = await page.evaluate(() => {
                 const getText = (selector) => document.querySelector(selector) ? document.querySelector(selector).innerText.trim() : 'Not found';
                 const getAttribute = (selector, attribute) => document.querySelector(selector) ? document.querySelector(selector).getAttribute(attribute) : 'Not found';
-
+            
                 const priceElement = document.querySelector('div.a-section.a-spacing-micro span.a-price span.a-offscreen');
-                const price = priceElement ? priceElement.innerText : 'Not found';
-
+                let price = priceElement ? priceElement.innerText : 'Not found';
+                if (price !== 'Not found') {
+                    // Remove currency symbol and convert to float
+                    price = parseFloat(price.replace(/[^\d.-]/g, ''));
+                }
+            
                 const title = getText('#productTitle');
                 const imageUrl = getAttribute('#landingImage', 'src');
                 const brandText = getText('#bylineInfo');
                 const brand = brandText.includes('Brand:') ? brandText.split('Brand:')[1].trim() : brandText.trim();
-
+            
                 const buyBoxWinner = getText('#sellerProfileTriggerId');
-
+            
                 const Category = getText('ul.a-unordered-list.a-horizontal.a-size-small li span.a-list-item a.a-link-normal.a-color-tertiary');
-
+            
                 const rankElements = document.querySelectorAll('tr');
                 let categoryRank = 'Not found';
                 let subCategoryRank = 'Not found';
@@ -94,8 +120,17 @@ async function scrapeProductDetails(asin, browser) {
                         }
                     }
                 });
-
-
+            
+                if (categoryRank !== 'Not found') {
+                    // Extract just the rank number
+                    categoryRank = categoryRank.match(/#\d+(,\d{3})*/)[0];
+                }
+                
+                if (subCategoryRank !== 'Not found') {
+                    // Extract just the rank number
+                    subCategoryRank = subCategoryRank.match(/#\d+(,\d{3})*/)[0];
+                }
+                
                 return {
                     price,
                     title,
@@ -103,10 +138,11 @@ async function scrapeProductDetails(asin, browser) {
                     brand,
                     buyBoxWinner,
                     Category,
-                    categoryRank
+                    categoryRank,
+                    subCategoryRank
                 };
             });
-
+            
             // Check if we need to click 'See All Buying Options'
             if (productDetails.price === 'Not found' || productDetails.buyBoxWinner === 'Not found') {
                 const buyingOptionsButton = await page.$('span#buybox-see-all-buying-choices a.a-button-text');
@@ -114,23 +150,27 @@ async function scrapeProductDetails(asin, browser) {
                     console.log('Clicking "See All Buying Options" to retrieve price and buy box winner.');
                     await buyingOptionsButton.click();
                     await page.waitForSelector('div#aod-offer-price span.a-price span.a-offscreen', { timeout: 60000 });
-
+            
                     productDetails = await page.evaluate(() => {
                         const getText = (selector) => document.querySelector(selector) ? document.querySelector(selector).innerText.trim() : 'Not found';
                         const getAttribute = (selector, attribute) => document.querySelector(selector) ? document.querySelector(selector).getAttribute(attribute) : 'Not found';
-
+            
                         const priceElement = document.querySelector('div#aod-offer-price span.a-price span.a-offscreen');
-                        const price = priceElement ? priceElement.innerText : 'Not found';
-
+                        let price = priceElement ? priceElement.innerText : 'Not found';
+                        if (price !== 'Not found') {
+                            // Remove currency symbol and convert to float
+                            price = parseFloat(price.replace(/[^\d.-]/g, ''));
+                        }
+            
                         const title = getText('#productTitle');
                         const imageUrl = getAttribute('#landingImage', 'src');
                         const brandText = getText('#bylineInfo');
                         const brand = brandText.includes('Brand:') ? brandText.split('Brand:')[1].trim() : brandText.trim();
-
+            
                         const buyBoxWinner = getText('div#aod-offer-soldBy a');
-
+            
                         const Category = getText('ul.a-unordered-list.a-horizontal.a-size-small li span.a-list-item a.a-link-normal.a-color-tertiary');                        
-
+            
                         const rankElements = document.querySelectorAll('tr');
                         let categoryRank = 'Not found';
                         let subCategoryRank = 'Not found';
@@ -145,6 +185,16 @@ async function scrapeProductDetails(asin, browser) {
                                 }
                             }
                         });
+            
+                        if (categoryRank !== 'Not found') {
+                            // Extract just the rank number
+                            categoryRank = categoryRank.match(/#\d+(,\d{3})*/)[0];
+                        }
+                        
+                        if (subCategoryRank !== 'Not found') {
+                            // Extract just the rank number
+                            subCategoryRank = subCategoryRank.match(/#\d+(,\d{3})*/)[0];
+                        }
 
                         return {
                             price,
@@ -160,6 +210,8 @@ async function scrapeProductDetails(asin, browser) {
                 }
             }
 
+            productDetails.asin = asin;
+
             success = true;  // Set success flag to true if no errors
         } catch (error) {
             console.error(`Error scraping ASIN ${asin}, attempt ${attempt} of ${maxRetries}:`, error);
@@ -168,7 +220,7 @@ async function scrapeProductDetails(asin, browser) {
 
     if (!success) {
         productDetails = {
-            asin,
+            asin: asin,
             price: 'Error',
             title: 'Error',
             brand: 'Error',
@@ -185,50 +237,74 @@ async function scrapeProductDetails(asin, browser) {
     return productDetails;
 }
 
-(async () => {
-    try {
-        // Check network speed
-        const speedMbps = await checkNetworkSpeed();
-        console.log(`Network speed: ${speedMbps} Mbps`);
-
-        if (speedMbps < 5) {  // Define a threshold for network speed
-            console.error('Network speed is too slow. Please try again later.');
-            process.exit(1);
+// Process jobs from the scrapeQueue
+scrapeQueue.process(async (job) => {
+    const { asins } = job.data;
+    const browser = await puppeteer.connect({ browserWSEndpoint: 'ws://chrome:3000', timeout: 120000 });
+    
+    const results = [];
+    for (const asin of asins) {
+        try {
+            const productDetails = await scrapeProductDetails(asin, browser);
+            results.push(productDetails);
+        } catch (error) {
+            console.error(`Error processing ASIN ${asin}:`, error);
         }
-
-        // Manually defined array of ASINs
-        const asins = [
-            'B000ZM34MO',
-            'B077572GG8',
-            'B0949ND2CK',
-            'B08GG7VBJ8',
-            'B07DNJ3L4D',
-            'B08539S62Q',
-            'B0CJLX82YH',
-            'B07BF47D9D',
-            'B0BQ7172D9',
-        ];
-
-        // const browser = await puppeteer.launch({
-        //     headless: true,
-        //     args: ['--no-sandbox', '--disable-setuid-sandbox']
-        // });
-
-        const browser = await puppeteer.connect({
-            browserWSEndpoint: 'ws://chrome:3000',
-        });
-
-        for (const asin of asins) {
-            try {
-                const productDetails = await scrapeProductDetails(asin, browser);
-                console.log(productDetails);
-            } catch (error) {
-                console.error(`Error processing ASIN ${asin}:`, error);
-            }
-        }
-
-        await browser.close();
-    } catch (error) {
-        console.error('Error in main function:', error);
     }
-})();
+
+    await browser.close();
+
+    // Send the scraped data to the Laravel endpoint
+    try {
+        const response = await axios.post(`${process.env.APP_URL}/api/products`, { products: results });
+        console.log('Data sent to Laravel:', response.data);
+    } catch (error) {
+        console.error('Error sending data to Laravel:', error);
+    }
+
+    return results;
+});
+
+// Endpoint to trigger scraping
+app.get('/scrape', async (req, res) => {
+    // const { asins } = req.body;  // Expect an array of ASINs in the request body
+
+    // if (!Array.isArray(asins)) {
+    //     return res.status(400).send({ error: 'Invalid input, expected an array of ASINs' });
+    // }
+
+    const asins = [
+        // 'B000ZM34MO',
+        // 'B077572GG8',
+        // 'B0949ND2CK',
+        'B08GG7VBJ8',
+        'B07DNJ3L4D',
+        'B08539S62Q',
+        'B0CJLX82YH',
+        'B07BF47D9D',
+        'B0BQ7172D9',
+    ];
+
+    const job = await scrapeQueue.add({ asins });
+    res.status(202).send({ jobId: job.id });
+});
+
+// Endpoint to check job status
+app.get('/job/:id', async (req, res) => {
+    const { id } = req.params;
+    const job = await scrapeQueue.getJob(id);
+
+    if (job) {
+        const state = await job.getState();
+        const progress = job._progress;
+        const result = job.returnvalue;
+
+        res.send({ id, state, progress, result });
+    } else {
+        res.status(404).send({ error: 'Job not found' });
+    }
+});
+
+app.listen(port, () => {
+    console.log(`Server is running on http://localhost:${port}`);
+});

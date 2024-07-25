@@ -48,14 +48,14 @@ class Product extends Resource
      *
      * @var bool
      */
-    public static $polling = true;
+    public static $polling = false;
 
     /**
      * The interval at which Nova should poll for new resources.
      *
      * @var int
      */
-    public static $pollingInterval = 5;
+    public static $pollingInterval = 25;
 
     /**
      * Indicates whether to show the polling toggle button inside Nova.
