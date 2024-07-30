@@ -3,6 +3,7 @@
 namespace App\Nova;
 
 use App\Nova\Actions\ImportProducts;
+use App\Nova\Actions\ScrapeProduct;
 use Illuminate\Http\Request;
 use Laravel\Nova\Fields\ID;
 use Laravel\Nova\Http\Requests\NovaRequest;
@@ -135,6 +136,7 @@ class Product extends Resource
         return [
             ImportProducts::make()->standalone(),
             (new DownloadExcel)->withHeadings()->except('id'),
+            ScrapeProduct::make()->standalone(),
         ];
     }
 }

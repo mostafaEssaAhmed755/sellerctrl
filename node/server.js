@@ -266,24 +266,24 @@ scrapeQueue.process(async (job) => {
 });
 
 // Endpoint to trigger scraping
-app.get('/scrape', async (req, res) => {
-    // const { asins } = req.body;  // Expect an array of ASINs in the request body
+app.post('/scrape', async (req, res) => {
+    const { asins } = req.body;  // Expect an array of ASINs in the request body
 
-    // if (!Array.isArray(asins)) {
-    //     return res.status(400).send({ error: 'Invalid input, expected an array of ASINs' });
-    // }
+    if (!Array.isArray(asins)) {
+        return res.status(400).send({ error: 'Invalid input, expected an array of ASINs' });
+    }
 
-    const asins = [
-        // 'B000ZM34MO',
-        // 'B077572GG8',
-        // 'B0949ND2CK',
-        'B08GG7VBJ8',
-        'B07DNJ3L4D',
-        'B08539S62Q',
-        'B0CJLX82YH',
-        'B07BF47D9D',
-        'B0BQ7172D9',
-    ];
+    // const asins = [
+    //     // 'B000ZM34MO',
+    //     // 'B077572GG8',
+    //     // 'B0949ND2CK',
+    //     'B08GG7VBJ8',
+    //     'B07DNJ3L4D',
+    //     'B08539S62Q',
+    //     'B0CJLX82YH',
+    //     'B07BF47D9D',
+    //     'B0BQ7172D9',
+    // ];
 
     const job = await scrapeQueue.add({ asins });
     res.status(202).send({ jobId: job.id });

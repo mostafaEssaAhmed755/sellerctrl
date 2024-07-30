@@ -4,10 +4,11 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Laravel\Nova\Actions\Actionable;
 
 class Category extends Model
 {
-    use HasFactory;
+    use HasFactory, Actionable;
 
     /**
      * The attributes that are mass assignable.
